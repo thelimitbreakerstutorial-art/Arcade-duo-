@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Arcade Duo: Snake & Bounce Run</title>
+<style>
+  :root { --bg:#12172b; --panel:#1c2340; --ink:#f3f5ff; --gold:#ffc83d; --coral:#ff5d73; --mint:#3ddc97; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--bg); color: var(--ink); font-family: "Trebuchet MS","Segoe UI",sans-serif; overflow: hidden; touch-action: none; }
+  #wrap { position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+  canvas { width: min(100%, calc(100vh * 1.6)); height: auto; aspect-ratio: 8/5; background: linear-gradient(#1b2347,#0e1226); border: 3px solid var(--panel); border-radius: 12px; }
+  .overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: rgba(10,13,28,.9); text-align: center; padding: 20px; }
+  .hidden { display: none !important; }
+  h1 { font-size: clamp(30px, 7vw, 54px); color: var(--gold); }
+  p { max-width: 440px; line-height: 1.5; opacity: .9; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
+  button { font: inherit; font-weight: bold; font-size: 19px; padding: 12px 30px; border: 0; border-radius: 30px; background: var(--gold); color: #1b1b2f; cursor: pointer; }
+  button.alt { background: var(--panel); color: var(--ink); }
+  button.snake { background: var(--mint); } button.bounce { background: var(--coral); color: #fff; }
+  button:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+  .card { background: var(--panel); border-radius: 16px; padding: 18px; width: 250px; display: flex; flex-direction: column; gap: 10px; }
+  .card p { font-size: 14px; }
+  #menuBtn { position: absolute; top: 8px; left: 8px; font-size: 13px; padding: 6px 14px; opacity: .85; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="800" height="500"></canvas>
+  <button id="menuBtn" class="alt hidden">Menu</button>
+
+  <div id="menu" class="overlay">
+    <h1>Arcade Duo</h1>
+    <p>Pick a game and start playing.</p>
+    <div class="row">
+      <div class="card"><h2>Snake</h2>
+        <p>Eat fruit to grow and speed up. Dodge obstacles across 5 stages.<br>Arrows / WASD or swipe.</p>
+        <button class="snake" id="pickSnake">Play Snake</button></div>
+      <div class="card"><h2>Bounce Run</h2>
+        <p>Break all the bricks. The ball keeps getting faster, so keep up.<br>Mouse, touch or arrows. Space to launch.</p>
+        <button class="bounce" id="pickBounce">Play Bounce Run</button></div>
+    </div>
+  </div>
+
+  <div id="end" class="overlay hidden">
+    <h1 id="endTitle"></h1><p id="endMsg"></p>
+    <div class="row"><button id="again">Play Again</button><button class="alt" id="toMenu">Menu</button></div>
+  </div>
+</div>
+
+<script>
+/* ================= SHARED ================= */
+const canvas = document.getElementById('game'), ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const $ = id => document.getElementById(id);
+let mode = 'menu', particles = [];
+
+function load(k) { try { return Number(localStorage.getItem(k) || 0); } catch (e) { return 0; } }
+function save(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+let audioCtx;
+function beep(freq, dur = 0.07) {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.frequency.value = freq; o.type = 'square'; g.gain.value = 0.04;
+    o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime + dur);
+  } catch (e) {}
+}
+
+/* Particles: squares (burst) or streaks (sparks) */
+function burst(x, y, color, n = 10) {
+  for (let i = 0; i < n; i++) particles.push({ x, y, dx: (Math.random()-.5)*5, dy: (Math.random()-.5)*5, life: 28, max: 28, color, g: 0, spark: false });
+}
+function sparks(x, y) {
+  const cols = ['#fff6c2', '#ffc83d', '#ff9f43', '#ffffff'];
+  for (let i = 0; i < 22; i++) {
+    const a = -Math.PI/2 + (Math.random()-.5) * Math.PI * 1.1, s = 2 + Math.random() * 5;
+    particles.push({ x, y, dx: Math.cos(a)*s, dy: Math.sin(a)*s, life: 26, max: 26, color: cols[i % 4], g: 0.18, spark: true });
+  }
+}
+function updateParticles() {
+  particles.forEach(p => { p.x += p.dx; p.y += p.dy; p.dy += p.g; p.life--; });
+  particles = particles.filter(p => p.life > 0);
+}
+function drawParticles() {
+  particles.forEach(p => {
+    ctx.globalAlpha = p.life / p.max; ctx.fillStyle = p.color; ctx.strokeStyle = p.color;
+    if (p.spark) { ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - p.dx*2, p.y - p.dy*2); ctx.stroke(); }
+    else ctx.fillRect(p.x, p.y, 4, 4);
+  });
+  ctx.globalAlpha = 1;
+}
+function rrect(x, y, w, h, r, fill) {
+  ctx.beginPath(); ctx.moveTo(x+r, y); ctx.arcTo(x+w, y, x+w, y+h, r); ctx.arcTo(x+w, y+h, x, y+h, r);
+  ctx.arcTo(x, y+h, x, y, r); ctx.arcTo(x, y, x+w, y, r); ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+}
+
+/* ---------- Menu / navigation ---------- */
+function showMenu() { mode = 'menu'; $('menu').classList.remove('hidden'); $('end').classList.add('hidden'); $('menuBtn').classList.add('hidden'); }
+function startGame(m) {
+  mode = m; particles = [];
+  $('menu').classList.add('hidden'); $('end').classList.add('hidden'); $('menuBtn').classList.remove('hidden');
+  (m === 'snake' ? snakeNew : bounceNew)();
+}
+function endScreen(title, color, msg) {
+  $('endTitle').textContent = title; $('endTitle').style.color = color; $('endMsg').innerHTML = msg;
+  $('end').classList.remove('hidden');
+}
+$('pickSnake').onclick = () => startGame('snake');
+$('pickBounce').onclick = () => startGame('bounce');
+$('again').onclick = () => startGame(mode);
+$('toMenu').onclick = showMenu; $('menuBtn').onclick = showMenu;
+
+/* ================= SNAKE ================= */
+const CELL = 20, COLS = W / CELL, ROWS = H / CELL;       // 40 x 25 grid
+const FRUITS_PER_STAGE = 6, SNAKE_STAGES = 5;
+let snake, dir, queue, fruit, walls, sStage, sScore, eaten, sState, lastStep, sBest = load('snakeBest');
+
+/* Obstacle layouts per stage (row 12, left side, is always kept clear for the start) */
+function layout(s) {
+  const w = [], hl = (y, a, b) => { for (let x = a; x <= b; x++) w.push([x, y]); }, vl = (x, a, b) => { for (let y = a; y <= b; y++) w.push([x, y]); };
+  if (s === 1) { vl(20, 3, 8); vl(20, 16, 21); }
+  if (s === 2) { hl(5, 10, 29); hl(19, 10, 29); }
+  if (s === 3) { vl(12, 2, 9); vl(12, 15, 22); vl(28, 2, 9); vl(28, 15, 22); hl(12, 22, 34); }
+  if (s === 4) { hl(6, 8, 32); hl(18, 8, 32); vl(20, 7, 10); vl(20, 14, 17); vl(34, 8, 16); }
+  return w;
+}
+function snakeStage() {
+  walls = layout(sStage); const len = 3 + sStage * 2;      // snake starts longer each stage
+  snake = []; for (let i = 0; i < len; i++) snake.push({ x: 2 + len - i, y: 12 });
+  dir = { x: 1, y: 0 }; queue = []; placeFruit(); sState = 'ready';
+}
+function snakeNew() { sStage = 0; sScore = 0; eaten = 0; snakeStage(); }
+function isBlocked(x, y) { return walls.some(w => w[0] === x && w[1] === y) || snake.some(s => s.x === x && s.y === y); }
+function placeFruit() {
+  do { fruit = { x: Math.floor(Math.random()*COLS), y: Math.floor(Math.random()*ROWS) }; } while (isBlocked(fruit.x, fruit.y));
+}
+function stepDelay() { return Math.max(55, 150 - sStage * 12 - eaten * 3); }    // faster with every fruit
+
+function turn(dx, dy) {
+  const last = queue.length ? queue[queue.length-1] : dir;
+  if (dx === -last.x && dy === -last.y) return;            // no 180-degree turns
+  if (dx === last.x && dy === last.y) return;
+  if (queue.length < 2) queue.push({ x: dx, y: dy });
+  if (sState === 'ready') sState = 'playing';
+}
+function snakeStep() {
+  if (queue.length) dir = queue.shift();
+  const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
+  if (head.x < 0 || head.y < 0 || head.x >= COLS || head.y >= ROWS || isBlocked(head.x, head.y)) return snakeOver();
+  snake.unshift(head);
+  if (head.x === fruit.x && head.y === fruit.y) {            // ate fruit: keep the tail so snake grows
+    eaten++; sScore += 10 * (sStage + 1); beep(700);
+    burst(fruit.x*CELL + 10, fruit.y*CELL + 10, '#ff5d73', 14);
+    if (eaten % FRUITS_PER_STAGE === 0) {
+      if (sStage === SNAKE_STAGES - 1) return snakeWin();
+      sStage++; sScore += 50; beep(900, .2); snakeStage(); return;
+    }
+    placeFruit();
+  } else snake.pop();
+}
+function snakeSummary() { if (sScore > sBest) { sBest = sScore; save('snakeBest', sBest); } return 'Score: <b>' + sScore + '</b> &nbsp; Best: <b>' + sBest + '</b>'; }
+function snakeOver() { sState = 'over'; beep(150, .3); endScreen('Game Over', 'var(--coral)', 'You crashed on stage ' + (sStage+1) + ' with ' + snake.length + ' segments.<br>' + snakeSummary()); }
+function snakeWin() { sState = 'won'; endScreen('You Win!', 'var(--mint)', 'You beat all ' + SNAKE_STAGES + ' stages.<br>' + snakeSummary()); }
+
+function snakeUpdate(now) {
+  updateParticles();
+  if (sState !== 'playing') return;
+  if (now - lastStep >= stepDelay()) { lastStep = now; snakeStep(); }
+}
+function snakeDraw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(255,255,255,.04)'; ctx.lineWidth = 1;
+  for (let x = 0; x <= W; x += CELL) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 0; y <= H; y += CELL) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  walls.forEach(w => rrect(w[0]*CELL+1, w[1]*CELL+1, CELL-2, CELL-2, 4, '#7a86b8'));
+  // fruit (apple with leaf)
+  const fx = fruit.x*CELL + 10, fy = fruit.y*CELL + 11;
+  ctx.fillStyle = '#ff5d73'; ctx.beginPath(); ctx.arc(fx, fy, 8, 0, 7); ctx.fill();
+  ctx.fillStyle = '#3ddc97'; ctx.fillRect(fx, fy - 12, 3, 6);
+  // snake: bright head, colors shift toward the tail
+  snake.forEach((s, i) => {
+    const t = i / Math.max(1, snake.length - 1);
+    rrect(s.x*CELL+1, s.y*CELL+1, CELL-2, CELL-2, i === 0 ? 7 : 5, i === 0 ? '#b8ffd9' : 'hsl(' + (150 + t*70) + ',70%,' + (55 - t*18) + '%)');
+  });
+  const h = snake[0]; ctx.fillStyle = '#12172b';
+  const ex = dir.y !== 0 ? [5, 14] : [dir.x > 0 ? 13 : 6, dir.x > 0 ? 13 : 6], ey = dir.y !== 0 ? [dir.y > 0 ? 13 : 6, dir.y > 0 ? 13 : 6] : [5, 14];
+  ctx.fillRect(h.x*CELL + ex[0], h.y*CELL + ey[0], 3, 3); ctx.fillRect(h.x*CELL + ex[1], h.y*CELL + ey[1], 3, 3);
+  drawParticles();
+  ctx.fillStyle = '#f3f5ff'; ctx.font = 'bold 16px "Trebuchet MS",sans-serif';
+  ctx.textAlign = 'left'; ctx.fillText('Score ' + sScore, 80, 20);
+  ctx.textAlign = 'center'; ctx.fillText('Stage ' + (sStage+1) + '/' + SNAKE_STAGES + '   Fruit ' + (eaten % FRUITS_PER_STAGE) + '/' + FRUITS_PER_STAGE, W/2, 20);
+  ctx.textAlign = 'right'; ctx.fillText('Length ' + snake.length, W - 14, 20);
+  if (sState === 'ready') { ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(243,245,255,.85)'; ctx.fillText('Press an arrow key or swipe to start', W/2, H - 40); }
+}
+
+/* ================= BOUNCE RUN ================= */
+const BALL_R = 9, PAD_H = 14, MAX_LIVES = 3, MAX_SPEED = 14, SPEED_RAMP = 0.0016;   // ball gains speed every frame
+const STAGES = [
+  { speed: 5, paddle: 130, rows: 3, colors: ['#3ddc97','#59e0a8','#7ee8bb'], ball: '#ffc83d' },
+  { speed: 6, paddle: 115, rows: 4, colors: ['#4da3ff','#6fb5ff','#8fc6ff','#b0d8ff'], ball: '#ff9f43' },
+  { speed: 7, paddle: 100, rows: 5, colors: ['#ff5d73','#ff7a8b','#ff97a3','#ffb3bb','#ffd0d5'], ball: '#3ddc97' },
+  { speed: 8, paddle: 85,  rows: 6, colors: ['#b66dff','#c487ff','#d3a1ff','#e1bbff','#eed5ff','#f8eeff'], ball: '#ffffff' }
+];
+let bStage, bScore, lives, bricks, bState, bBest = load('bounceRunBest');
+const paddle = { x: 0, w: 130 }, ball = { x: 0, y: 0, dx: 0, dy: 0, speed: 5 }, keys = { left: false, right: false };
+
+function bounceStage() {
+  const s = STAGES[bStage]; paddle.w = s.paddle; paddle.x = (W - paddle.w) / 2;
+  const cols = 10, gap = 6, bw = (W - 40 - gap*(cols-1)) / cols; bricks = [];
+  for (let r = 0; r < s.rows; r++) for (let c = 0; c < cols; c++)
+    bricks.push({ x: 20 + c*(bw+gap), y: 60 + r*28, w: bw, h: 22, color: s.colors[r % s.colors.length], hits: bStage >= 2 && r === 0 ? 2 : 1, alive: true });
+  resetBall();
+}
+function resetBall() { ball.speed = STAGES[bStage].speed; ball.x = paddle.x + paddle.w/2; ball.y = H - 40 - BALL_R; ball.dx = ball.dy = 0; bState = 'ready'; }
+function launchBall() {
+  if (mode !== 'bounce' || bState !== 'ready') return;
+  const a = -Math.PI/2 + (Math.random()*0.6 - 0.3); ball.dx = Math.cos(a)*ball.speed; ball.dy = Math.sin(a)*ball.speed; bState = 'playing';
+}
+function bounceNew() { bStage = 0; bScore = 0; lives = MAX_LIVES; bounceStage(); }
+
+function bounceUpdate() {
+  updateParticles();
+  if (keys.left) paddle.x = Math.max(0, paddle.x - 9);
+  if (keys.right) paddle.x = Math.min(W - paddle.w, paddle.x + 9);
+  if (bState === 'ready') { ball.x = paddle.x + paddle.w/2; return; }
+  if (bState !== 'playing') return;
+
+  // the ball speeds up over time; keep its direction, grow its speed
+  ball.speed = Math.min(MAX_SPEED, ball.speed + SPEED_RAMP);
+  const m = Math.hypot(ball.dx, ball.dy); ball.dx *= ball.speed / m; ball.dy *= ball.speed / m;
+  ball.x += ball.dx; ball.y += ball.dy;
+
+  if (ball.x < BALL_R) { ball.x = BALL_R; ball.dx *= -1; beep(300); }
+  if (ball.x > W - BALL_R) { ball.x = W - BALL_R; ball.dx *= -1; beep(300); }
+  if (ball.y < BALL_R) { ball.y = BALL_R; ball.dy *= -1; beep(300); }
+
+  const py = H - 30 - PAD_H;
+  if (ball.dy > 0 && ball.y + BALL_R >= py && ball.y + BALL_R <= py + PAD_H + 10 && ball.x >= paddle.x - 4 && ball.x <= paddle.x + paddle.w + 4) {
+    const hit = (ball.x - (paddle.x + paddle.w/2)) / (paddle.w/2), a = hit * Math.PI/3;
+    ball.dx = Math.sin(a) * ball.speed; ball.dy = -Math.cos(a) * ball.speed; ball.y = py - BALL_R;
+    sparks(ball.x, py); beep(520);                             // sparkles on paddle hit
+  }
+  for (const b of bricks) {
+    if (!b.alive) continue;
+    if (ball.x + BALL_R > b.x && ball.x - BALL_R < b.x + b.w && ball.y + BALL_R > b.y && ball.y - BALL_R < b.y + b.h) {
+      const ox = Math.min(ball.x + BALL_R - b.x, b.x + b.w - (ball.x - BALL_R)), oy = Math.min(ball.y + BALL_R - b.y, b.y + b.h - (ball.y - BALL_R));
+      if (ox < oy) ball.dx *= -1; else ball.dy *= -1;
+      if (--b.hits <= 0) { b.alive = false; bScore += 10 * (bStage+1); burst(b.x + b.w/2, b.y + b.h/2, b.color); beep(700); } else beep(450);
+      break;
+    }
+  }
+  if (bricks.every(b => !b.alive)) {
+    if (bStage === STAGES.length - 1) return bounceEnd(true);
+    bStage++; bScore += 50; beep(900, .2); bounceStage(); return;
+  }
+  if (ball.y - BALL_R > H) { lives--; beep(150, .25); if (lives <= 0) bounceEnd(false); else resetBall(); }
+}
+function bounceEnd(won) {
+  bState = won ? 'won' : 'over';
+  if (bScore > bBest) { bBest = bScore; save('bounceRunBest', bBest); }
+  endScreen(won ? 'You Win!' : 'Game Over', won ? 'var(--mint)' : 'var(--coral)',
+    (won ? 'You cleared all ' + STAGES.length + ' stages.' : 'The ball got past you on stage ' + (bStage+1) + '.') + '<br>Score: <b>' + bScore + '</b> &nbsp; Best: <b>' + bBest + '</b>');
+}
+function bounceDraw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#f3f5ff'; ctx.font = 'bold 17px "Trebuchet MS",sans-serif';
+  ctx.textAlign = 'left'; ctx.fillText('Score ' + bScore, 80, 32);
+  ctx.textAlign = 'center'; ctx.fillText('Stage ' + (bStage+1) + '/' + STAGES.length + '   Speed ' + ball.speed.toFixed(1), W/2 + 20, 32);
+  for (let i = 0; i < MAX_LIVES; i++) { ctx.fillStyle = i < lives ? '#ff5d73' : '#3a4166'; ctx.beginPath(); ctx.arc(W - 28 - i*26, 27, 8, 0, 7); ctx.fill(); }
+  bricks.forEach(b => { if (!b.alive) return; rrect(b.x, b.y, b.w, b.h, 5, b.color); if (b.hits > 1) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.strokeRect(b.x+2, b.y+2, b.w-4, b.h-4); } });
+  rrect(paddle.x, H - 30 - PAD_H, paddle.w, PAD_H, 7, '#f3f5ff');
+  const c = STAGES[bStage].ball; ctx.shadowColor = c; ctx.shadowBlur = 16; ctx.fillStyle = c;
+  ctx.beginPath(); ctx.arc(ball.x, ball.y, BALL_R, 0, 7); ctx.fill(); ctx.shadowBlur = 0;
+  drawParticles();
+  if (bState === 'ready') { ctx.fillStyle = 'rgba(243,245,255,.8)'; ctx.textAlign = 'center'; ctx.font = '16px "Trebuchet MS",sans-serif'; ctx.fillText('Tap, click or press Space to launch', W/2, H - 80); }
+}
+
+/* ================= INPUT ================= */
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'escape') return showMenu();
+  if (mode === 'snake') {
+    if (k === 'arrowup' || k === 'w') { e.preventDefault(); turn(0, -1); }
+    if (k === 'arrowdown' || k === 's') { e.preventDefault(); turn(0, 1); }
+    if (k === 'arrowleft' || k === 'a') { e.preventDefault(); turn(-1, 0); }
+    if (k === 'arrowright' || k === 'd') { e.preventDefault(); turn(1, 0); }
+  } else if (mode === 'bounce') {
+    if (k === 'arrowleft' || k === 'a') keys.left = true;
+    if (k === 'arrowright' || k === 'd') keys.right = true;
+    if (e.code === 'Space') { e.preventDefault(); launchBall(); }
+  }
+});
+window.addEventListener('keyup', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'arrowleft' || k === 'a') keys.left = false;
+  if (k === 'arrowright' || k === 'd') keys.right = false;
+});
+function pointerX(cx) { if (mode !== 'bounce') return; const r = canvas.getBoundingClientRect(); paddle.x = Math.max(0, Math.min(W - paddle.w, (cx - r.left) * (W / r.width) - paddle.w/2)); }
+canvas.addEventListener('mousemove', e => pointerX(e.clientX));
+canvas.addEventListener('click', launchBall);
+let touchStart = null;
+canvas.addEventListener('touchstart', e => { const t = e.touches[0]; touchStart = { x: t.clientX, y: t.clientY }; pointerX(t.clientX); launchBall(); }, { passive: true });
+canvas.addEventListener('touchmove', e => {
+  const t = e.touches[0]; pointerX(t.clientX);
+  if (mode === 'snake' && touchStart) {                         // swipe to steer the snake
+    const dx = t.clientX - touchStart.x, dy = t.clientY - touchStart.y;
+    if (Math.max(Math.abs(dx), Math.abs(dy)) > 24) {
+      if (Math.abs(dx) > Math.abs(dy)) turn(dx > 0 ? 1 : -1, 0); else turn(0, dy > 0 ? 1 : -1);
+      touchStart = { x: t.clientX, y: t.clientY };
+    }
+  }
+}, { passive: true });
+
+/* ================= MAIN LOOP ================= */
+sStage = 0; bStage = 0; sScore = 0; bScore = 0; eaten = 0; lives = MAX_LIVES; snakeStage(); bounceStage(); lastStep = 0;
+function loop(now) {
+  if (mode === 'snake') { snakeUpdate(now); snakeDraw(); }
+  else if (mode === 'bounce') { bounceUpdate(); bounceDraw(); }
+  else { ctx.clearRect(0, 0, W, H); }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
